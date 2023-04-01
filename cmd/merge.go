@@ -27,6 +27,7 @@ var tagdefs []string
 var expr string
 var split bool
 var interpolation bool
+var featureFlags []string
 var processingOptions flow.Options
 var state string
 var bindings string
@@ -72,6 +73,7 @@ func init() {
 	mergeCmd.Flags().StringArrayVarP(&values, "define", "D", nil, "key/value bindings")
 	mergeCmd.Flags().StringArrayVar(&selection, "select", []string{}, "filter dedicated output fields")
 	mergeCmd.Flags().StringArrayVar(&tagdefs, "tag", []string{}, "tag files (tag:path)")
+	mergeCmd.Flags().StringArrayVar(&featureFlags, "features", []string{}, "set feature flags")
 	mergeCmd.Flags().StringVar(&expr, "evaluate", "", "evaluation expression")
 }
 
@@ -159,11 +161,15 @@ func merge(stdin bool, templateFilePath string, opts flow.Options, json, split b
 		for k, v := range values {
 			i, err := strconv.ParseInt(v, 10, 64)
 			if err == nil {
-				m[k] = yaml.NewNode(i, "<values>")
+				err = addValue(m, k, yaml.NewNode(i, "<values>"))
 			} else {
-				m[k] = yaml.NewNode(v, "<values>")
+				err = addValue(m, k, yaml.NewNode(v, "<values>"))
+			}
+			if err != nil {
+				log.Fatalln(fmt.Sprintf("error in value definitions (-D): %s", err))
 			}
 		}
+
 	}
 
 	tags := []*dynaml.Tag{}
@@ -231,9 +237,19 @@ func merge(stdin bool, templateFilePath string, opts flow.Options, json, split b
 		" -: depending on a node with an error"
 
 	var binding dynaml.Binding
-	if bindingYAML != nil || interpolation || len(tags) > 0 || len(templateYAMLs) > 1 {
-		defstate := flow.NewDefaultState().SetInterpolation(interpolation)
-		defstate.SetTags(tags...)
+	features := features.Features()
+	for _, list := range featureFlags {
+		for _, f := range strings.Split(list, ",") {
+			if err := features.Set(strings.TrimSpace(f), true); err != nil {
+				log.Fatalln(err.Error())
+			}
+		}
+	}
+	if interpolation {
+		features.SetInterpolation(true)
+	}
+	if bindingYAML != nil || features.Size() > 0 || len(tags) > 0 || len(templateYAMLs) > 1 {
+		defstate := flow.NewDefaultState().SetTags(tags...).SetFeatures(features)
 		binding = flow.NewEnvironment(
 			nil, "context", defstate)
 		if bindingYAML != nil {
@@ -243,6 +259,7 @@ func merge(stdin bool, templateFilePath string, opts flow.Options, json, split b
 			}
 			binding = binding.WithLocalScope(values)
 		}
+		features = binding.GetFeatures()
 	}
 
 	prepared, err := flow.PrepareStubs(binding, processingOptions.Partial, stubs...)
@@ -272,7 +289,7 @@ func merge(stdin bool, templateFilePath string, opts flow.Options, json, split b
 			}
 			if subpath != "" {
 				comps := dynaml.PathComponents(subpath, false)
-				node, ok := yaml.FindR(true, flowed, comps...)
+				node, ok := yaml.FindR(true, flowed, features, comps...)
 				if !ok {
 					log.Fatalln(fmt.Sprintf("path %q not found%s", subpath, doc))
 				}
@@ -330,7 +347,7 @@ func merge(stdin bool, templateFilePath string, opts flow.Options, json, split b
 				new := map[string]yaml.Node{}
 				for _, p := range selection {
 					comps := dynaml.PathComponents(p, false)
-					node, ok := yaml.FindR(true, flowed, comps...)
+					node, ok := yaml.FindR(true, flowed, features, comps...)
 					if !ok {
 						log.Fatalln(fmt.Sprintf("path %q not found%s", subpath, doc))
 					}
@@ -379,4 +396,44 @@ func merge(stdin bool, templateFilePath string, opts flow.Options, json, split b
 			}
 		}
 	}
+}
+
+func addValue(m map[string]yaml.Node, name string, value yaml.Node) error {
+	comps := strings.Split(name, ".")
+	for i := 0; i < len(comps)-1; i++ {
+		if comps[i] == "" {
+			return fmt.Errorf("empty path component in %q", name)
+		}
+		mask := 0
+		for strings.HasSuffix(comps[i], "\\") {
+			mask++
+			comps[i] = comps[i][:len(comps[i])-1]
+		}
+		for mask > 1 {
+			comps[i] += "\\"
+			mask -= 2
+		}
+		if mask > 0 {
+			comps[i] += "." + comps[i+1]
+			copy(comps[i+1:], comps[i+2:])
+			comps = comps[:len(comps)-1]
+			i--
+		}
+	}
+	for i := 0; i < len(comps)-1; i++ {
+		c := comps[i]
+		if m[c] == nil {
+			n := map[string]yaml.Node{}
+			m[c] = yaml.NewNode(n, "<values>")
+			m = n
+		} else {
+			if n, ok := m[c].Value().(map[string]yaml.Node); !ok {
+				return fmt.Errorf("field %q in %s is no map", c, name)
+			} else {
+				m = n
+			}
+		}
+	}
+	m[comps[len(comps)-1]] = value
+	return nil
 }

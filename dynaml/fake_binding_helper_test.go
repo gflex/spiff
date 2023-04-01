@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/mandelsoft/spiff/features"
 	"github.com/mandelsoft/spiff/yaml"
 )
 
@@ -25,6 +26,10 @@ func (c FakeBinding) GetFileContent(file string, cached bool) ([]byte, error) {
 }
 
 func (c FakeBinding) GetState() State {
+	return nil
+}
+
+func (c FakeBinding) GetFeatures() features.FeatureFlags {
 	return nil
 }
 
@@ -53,6 +58,10 @@ func (c FakeBinding) RedirectOverwrite([]string) Binding {
 }
 
 func (c FakeBinding) WithScope(map[string]yaml.Node) Binding {
+	return c
+}
+
+func (c FakeBinding) WithListScope([]yaml.Node) Binding {
 	return c
 }
 
